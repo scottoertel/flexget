@@ -1,0 +1,323 @@
+web_server:
+  bind: 0.0.0.0
+  port: 8080
+  web_ui: yes
+  base_url: /flexget
+
+schedules:
+  - tasks: '*'
+    interval:
+      minutes: 10
+
+variables: variables.yml
+
+templates:
+  SkipDownloaded:
+    list_match:
+      from:
+        - movie_list: movies
+      action: reject
+      remove_on_match: no
+  SkipCollected:
+    trakt_lookup:
+       account: '{? trakt.account ?}'
+       username: '{? trakt.username ?}'
+    if:
+      - trakt_collected: reject
+  TV_Series720:
+    configure_series:
+      from:
+        trakt_list:
+          username: '{? trakt.username ?}'
+          account: '{? trakt.account ?}'
+          list: trakt-following-720p
+          type: shows
+          strip_dates: yes
+      settings:
+        quality: 720p
+  TV_Series1080:
+    configure_series:
+      from:
+        trakt_list:
+          username: '{? trakt.username ?}'
+          account: '{? trakt.account ?}'# required if list is not public
+          list: trakt-following-1080p
+          type: shows
+          strip_dates: yes
+      settings:
+        quality: 1080p
+  Series_Streams:
+    private_torrents: yes
+    inputs:
+      - rss: '{? rss_feeds.feed1 ?}'
+      - rss: '{? rss_feeds.feed2 ?}'
+  Torrent_TV:
+    qbittorrent:
+      username: '{? qbittorrent.username ?}'
+      password: '{? qbittorrent.password ?}'
+      path: /downloads/TV
+      label: TV
+      host: '{? qbittorrent.host ?}'
+      port: '{? qbittorrent.port ?}'
+  Torrent_Movies:
+    imdb_lookup: yes
+    qbittorrent:
+      username: '{? qbittorrent.username ?}'
+      password: '{? qbittorrent.password ?}'
+      path: /downloads/Movie
+      label: Movies
+      host: '{? qbittorrent.host ?}'
+      port: '{? qbittorrent.port ?}'
+  Torrent_MMA:
+    qbittorrent:
+      username: '{? qbittorrent.username ?}'
+      password: '{? qbittorrent.password ?}'
+      path: /downloads/MMA
+      label: MMA
+      host: '{? qbittorrent.host ?}'
+      port: '{? qbittorrent.port ?}'
+  Slack_TV:
+    notify:
+      entries:
+        via:
+          - slack:
+              web_hook_url: '{? slack.web_hook_url ?}'
+              message: "{{ tvdb_series_name }}"
+              attachments:
+                - title: "{{ tvdb_series_name }} ({{ tvdb_ep_name }})"
+                  image_url: "{{ tvdb_banner }}"
+                  fallback: "{{ tvdb_series_name }} ({{ tvdb_ep_name }})"
+                  text: "{{ tvdb_ep_overview }}"
+                  color: "#e67e22"
+                  footer: "{{ task }}"
+                  footer_icon: "https://avatars2.githubusercontent.com/u/17483320?s=400&v=4"
+                  fields:
+                    - title: Runtime
+                      value: "{{ tvdb_runtime }} mins"
+                      short: true
+                    - title: Air Date
+                      value: "{{ tvdb_ep_air_date }}"
+                      short: true
+                    - title: Genres
+                      value: "{{ tvdb_genres | join(', ') | title }}"
+                      short: true
+                    - title: Show Rating
+                      value: "{{ tvdb_rating }}"
+                      short: true
+  Slack_Movies:
+    notify:
+      entries:
+        via:
+          - slack:
+              web_hook_url: '{? slack.web_hook_url ?}'
+              message: "{{ imdb_name }}"
+              icon_emoji: movie_camera
+              attachments:
+                - title: "{{ imdb_name }} ({{ imdb_year }})"
+                  image_url: "{{ imdb_photo | first }}" # better quality
+                  title_link: "{{ imdb_url }}"
+                  fallback: "{{ imdb_name }} ({{ imdb_year }})"
+                  text: "{{ imdb_plot_outline }}"
+                  color: "#e67e22"
+                  footer: "{{ task }}"
+                  footer_icon: "https://avatars2.githubusercontent.com/u/17483320?s=400&v=4"
+                  fields:
+                    - title: Score
+                      value: "{{ imdb_score }}"
+                      short: true
+                    - title: Genres
+                      value: "{{ imdb_genres | join(', ') | title }}"
+                      short: true
+                    - title: Rating
+                      value: "{{ imdb_mpaa_rating }}"
+                      short: true
+
+tasks:
+  tv-series-1080p:
+    no_entries_ok: yes
+    priority: 1
+    template:
+      - TV_Series1080
+      - Series_Streams
+      - Slack_TV
+      - Torrent_TV
+      - SkipCollected
+    thetvdb_lookup: yes
+    quality: 1080p+
+
+  tv-series-720p:
+    no_entries_ok: yes
+    priority: 2
+    template:
+      - TV_Series720
+      - Series_Streams
+      - Slack_TV
+      - Torrent_TV
+      - SkipCollected
+    quality: 720p+
+    thetvdb_lookup: yes
+
+
+  movies-trakt-discovery:
+    no_entries_ok: yes
+    priority: 8
+    template:
+      - Torrent_Movies
+      - Slack_Movies
+      - SkipDownloaded
+    quality:
+      - 1080p+ !cam
+      - dvdscr !cam
+      - dvdrip !cam
+      - h264 !cam
+      - xvid !cam
+    content_size:
+      min: 1000
+      max: 6000
+    exists_movie:
+      - /movies/FlexMovies
+      - /movies/PlexMovies
+    private_torrents: yes
+    discover:
+      release_estimations: ignore
+      interval: 5 minutes
+      what:
+        - movie_list: trakt-movies
+      from:
+        - search_rss: '{? rss_feeds.feed1 ?}'
+        - search_rss: '{? rss_feeds.feed2 ?}'
+    list_match:
+      from:
+        - movie_list: trakt-movies
+    list_remove:
+      - trakt_list:
+          account: '{? trakt.account ?}'
+          list: "trakt-movies"
+          type: movies
+
+  fill-movies-queue:
+    no_entries_ok: yes
+    priority: 6
+    trakt_list:
+      username: '{? trakt.username ?}'
+      account: '{? trakt.account ?}'
+      list: trakt-movies
+      type: movies
+      strip_dates: yes
+    accept_all: yes
+    list_add:
+      - movie_list: trakt-movies
+
+  fill-movies-queue-from-disk-plex:
+    no_entries_ok: yes
+    priority: 7
+    filesystem:
+      path: /movies/PlexMovies
+      recursive: yes
+    accept_all: yes
+    list_add:
+      - movie_list: movies
+
+  fill-movies-queue-from-disk-flex:
+    no_entries_ok: yes
+    priority: 7
+    filesystem:
+      path: /movies/FlexMovies
+      recursive: yes
+    accept_all: yes
+    list_add:
+      - movie_list: movies
+
+  download-mma-manual:
+    no_entries_ok: yes
+    priority: 9
+    template:
+      - Torrent_MMA
+    filesystem:
+      path: "/downloads/MMA"
+      mask: '*.torrent'
+    accept_all: yes
+    exec:
+      on_output:
+        for_accepted: rm -f "{{location}}"
+
+  download-tv-manual:
+    no_entries_ok: yes
+    priority: 11
+    template:
+      - Torrent_TV
+    filesystem:
+      path: "/downloads/TV"
+      mask: '*.torrent'
+    accept_all: yes
+    exec:
+      on_output:
+        for_accepted: rm -f "{{location}}"
+
+  download-movies-manual:
+    no_entries_ok: yes
+    priority: 12
+    template:
+      - Torrent_Movies
+    filesystem:
+      path: "/downloads/Movies"
+      mask: '*.torrent'
+    accept_all: yes
+    exec:
+      on_output:
+        for_accepted: rm -f "{{location}}"
+
+  move-series-uncompress:
+    no_entries_ok: yes
+    priority: 3
+    accept_all: yes
+    parsing:
+      series: guessit
+    metainfo_series: yes
+    filesystem:
+      path: /input/TV
+      recursive: yes
+      regexp: '.*s\d{1,2}e\d{1,2}.*\.(rar|r0+[01]|zip)'
+    decompress:
+      to: '/output/TV/{{series_name}}/Season {{series_season}}/'
+      keep_dirs: no
+      delete_archive: no
+
+  move-movie-uncompress:
+    no_entries_ok: yes
+    priority: 4
+    accept_all: yes
+    metainfo_movie: yes
+    filesystem:
+      path: /input/Movies
+      recursive: yes
+      regexp: '.*\.(rar|r0+[01]|zip)'
+    decompress:
+      to: '/output/Movies/{{movie_name}}/'
+      keep_dirs: no
+      delete_archive: no
+
+  move-mma-uncompress:
+    no_entries_ok: yes
+    priority: 10
+    accept_all: yes
+    filesystem:
+      path: /input/MMA
+      recursive: yes
+      regexp: '.*\.(rar|r0+[01]|zip)'
+    decompress:
+      to: '/output/MMA/'
+      keep_dirs: no
+      delete_archive: no
+
+  move-movie-files:
+    no_entries_ok: yes
+    priority: 5
+    accept_all: yes
+    metainfo_movie: yes
+    filesystem:
+      path: /input/Movies
+      recursive: yes
+      regexp: '.*\.(avi|mkv|mp4)'
+    move:
+      to: '/output/Movies/{{movie_name}}/'
